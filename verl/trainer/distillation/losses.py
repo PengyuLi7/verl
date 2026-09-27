@@ -342,10 +342,12 @@ def compute_forward_kl_topk(
     if tail_loss is not None:
         tail_loss = no_padding_2_padding(tail_loss, data)
     elif loss_mode == "forward_kl_topk_tail":
-        # Fused engines may compute the top-k probabilities/mass in-kernel and
-        # expose differentiable mass tensors without knowing about this loss mode.
-        # Add the tail bucket here so those paths can opt in without changing the
-        # teacher protocol or materializing full logits.
+        # Non-fused FSDP/Megatron paths return tail_loss and take the branch above.
+        # A fused top-k engine may return only the truncated loss and probability
+        # masses, so this fallback adds the missing tail term without changing the
+        # teacher payload or materializing full logits. Its student_mass must be
+        # differentiable; metric-only masses (e.g. VeOmni's chunk_topk_distill)
+        # cannot carry the tail gradient and are rejected by the guard below.
         if torch.is_grad_enabled() and distillation_losses.requires_grad and not student_mass.requires_grad:
             raise RuntimeError(
                 "forward_kl_topk_tail requires differentiable student_mass from the fused engine; "

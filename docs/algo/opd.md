@@ -2,7 +2,7 @@
 
 **Author:** [Jacob Helwig](https://jacobhelwig.github.io/)
 
-Last updated: 09/09/2026.
+Last updated: 09/27/2026.
 
 ## Background
 
@@ -452,6 +452,10 @@ This is the exact KL after coarse-graining the vocabulary into the $k$
 selected tokens plus one tail bucket. It is non-negative and is a lower bound
 on the full-vocabulary forward KL. It does not recover how teacher probability
 is distributed among individual tail tokens.
+
+Related work includes **Decoupled Top-K Knowledge Distillation** in the
+[LFM2 Technical Report](https://arxiv.org/abs/2511.23404v1) and the **Ghost token**
+in [Sparse Logit Sampling: Accelerating Knowledge Distillation in LLMs](https://aclanthology.org/2025.acl-long.885.pdf).
 
 To use GKD OPD, set `loss_mode=forward_kl_topk`, choose `topk`, and disable policy-gradient distillation:
 

@@ -85,6 +85,12 @@ def tail_aware_kl_divergence(
     ``K + 1``-class distributions ``[p_topk, 1 - p_topk.sum()]`` and
     ``[q_topk, 1 - q_topk.sum()]``.
 
+    Related work:
+        - Decoupled Top-K Knowledge Distillation in the LFM2 Technical Report:
+          https://arxiv.org/abs/2511.23404v1
+        - Ghost token in Sparse Logit Sampling: Accelerating Knowledge Distillation in LLMs:
+          https://aclanthology.org/2025.acl-long.885.pdf
+
     Returns:
         A tuple of per-token coarse-grained divergence, student top-k mass,
         teacher top-k mass, and the tail-bucket contribution. The divergence
@@ -106,16 +112,16 @@ def tail_aware_kl_divergence(
     return topk_loss + tail_loss, student_mass, teacher_mass, tail_loss
 
 
-def _compute_forward_kl_topk(
+def compute_forward_kl_topk(
     student_logits: torch.Tensor,
     teacher_topk_log_probs: torch.Tensor,
     teacher_topk_ids: torch.Tensor,
     config: DistillationConfig,
     data_format: str,
     *,
-    include_tail: bool,
+    include_tail: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Shared FSDP implementation for truncated and tail-aware teacher-top-k KL.
+    """Compute truncated or tail-aware teacher-top-k KL with the FSDP backend.
 
     Args:
         student_logits: (bsz, seqlen/sp_size, vocab_size).
@@ -126,6 +132,7 @@ def _compute_forward_kl_topk(
         include_tail: whether to collapse all non-top-k tokens into one aggregate
             bucket, which turns the truncated objective into the exact forward KL
             between the two coarse-grained ``K + 1``-class distributions.
+            Selected by ``loss_mode=forward_kl_topk_tail``.
 
     Returns:
     - distillation_losses: (bsz, seqlen/sp_size)
@@ -201,40 +208,3 @@ def _compute_forward_kl_topk(
         outputs["tail_loss"] = tail_loss
     return outputs
 
-
-def compute_forward_kl_topk(
-    student_logits: torch.Tensor,
-    teacher_topk_log_probs: torch.Tensor,
-    teacher_topk_ids: torch.Tensor,
-    config: DistillationConfig,
-    data_format: str,
-    *,
-    include_tail: bool = False,
-) -> dict[str, torch.Tensor]:
-    """Compute forward KL distillation loss using top-k log probabilities.
-
-    Args:
-        student_logits: (bsz, seqlen/sp_size, vocab_size).
-        teacher_topk_log_probs: (bsz, seqlen, topk).
-        teacher_topk_ids: (bsz, seqlen, topk).
-        config: distillation config, providing ``log_prob_min_clamp`` and ``tail_mass_eps``.
-        data_format: "thd" or "bshd", models not support THD format, e.g GPT-OSS, Qwen3.5
-        include_tail: add one aggregate bucket holding every non-top-k token, i.e.
-            optimize the exact forward KL between the two coarse-grained
-            ``K + 1``-class distributions instead of the truncated top-k sum.
-            Selected by ``loss_mode=forward_kl_topk_tail``.
-
-    Returns:
-    - distillation_losses: (bsz, seqlen/sp_size)
-    - student_mass: (bsz, seqlen/sp_size)
-    - teacher_mass: (bsz, seqlen/sp_size)
-    - tail_loss: (bsz, seqlen/sp_size), only when ``include_tail=True``
-    """
-    return _compute_forward_kl_topk(
-        student_logits=student_logits,
-        teacher_topk_log_probs=teacher_topk_log_probs,
-        teacher_topk_ids=teacher_topk_ids,
-        config=config,
-        data_format=data_format,
-        include_tail=include_tail,
-    )
