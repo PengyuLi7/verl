@@ -207,4 +207,3 @@ def compute_forward_kl_topk(
     if tail_loss is not None:
         outputs["tail_loss"] = tail_loss
     return outputs
-

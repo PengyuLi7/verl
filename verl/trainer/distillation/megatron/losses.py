@@ -383,4 +383,3 @@ def compute_forward_kl_topk(
     if include_tail:
         outputs["tail_loss"] = tail_loss
     return outputs
-
