@@ -88,6 +88,8 @@ def tail_aware_kl_divergence(
     Related work:
         - Decoupled Top-K Knowledge Distillation in the LFM2 Technical Report:
           https://arxiv.org/abs/2511.23404v1
+          At temperature 1, its Bernoulli membership KL plus the teacher-mass-weighted
+          conditional Top-k KL are algebraically the same objective computed here.
         - Ghost token in Sparse Logit Sampling: Accelerating Knowledge Distillation in LLMs:
           https://aclanthology.org/2025.acl-long.885.pdf
 

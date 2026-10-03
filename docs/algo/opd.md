@@ -2,7 +2,7 @@
 
 **Author:** [Jacob Helwig](https://jacobhelwig.github.io/)
 
-Last updated: 09/27/2026.
+Last updated: 10/03/2026.
 
 ## Background
 
@@ -453,9 +453,15 @@ selected tokens plus one tail bucket. It is non-negative and is a lower bound
 on the full-vocabulary forward KL. It does not recover how teacher probability
 is distributed among individual tail tokens.
 
-Related work includes **Decoupled Top-K Knowledge Distillation** in the
-[LFM2 Technical Report](https://arxiv.org/abs/2511.23404v1) and the **Ghost token**
-in [Sparse Logit Sampling: Accelerating Knowledge Distillation in LLMs](https://aclanthology.org/2025.acl-long.885.pdf).
+The same decomposition appears as **Decoupled Top-K Knowledge Distillation** in the
+[LFM2 Technical Report](https://arxiv.org/abs/2511.23404v1): at temperature 1, its
+Bernoulli membership KL plus the teacher-mass-weighted conditional Top-$k$ KL are
+algebraically this loss, and it notes the same lower bound. The aggregate tail
+bucket is the **Ghost token** of
+[Sparse Logit Sampling: Accelerating Knowledge Distillation in LLMs](https://aclanthology.org/2025.acl-long.885.pdf).
+`forward_kl_topk_tail` brings that objective to the OPD path here: it keeps the
+existing teacher top-$k$ payload and adds the analytic gradient on the
+out-of-top-$k$ tokens.
 
 To use GKD OPD, set `loss_mode=forward_kl_topk`, choose `topk`, and disable policy-gradient distillation:
 
