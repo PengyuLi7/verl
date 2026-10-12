@@ -465,6 +465,12 @@ class SGLangHttpServer:
         "wake_up", state_lane_id=lambda self: ray.get_runtime_context().get_actor_name()
     )
     async def wake_up(self):
+        """Resume released memory and flush the cache on the first node.
+
+        Colocated mode restores the tags released by sleep; standalone mode
+        restores only the KV cache. Hybrid mode wakes during weight updates
+        and rejects this call on the first node.
+        """
         if self.node_rank != 0:
             return
 
@@ -493,6 +499,11 @@ class SGLangHttpServer:
         "sleep", state_lane_id=lambda self: ray.get_runtime_context().get_actor_name()
     )
     async def sleep(self):
+        """Release rollout memory on the first node when cache freeing is enabled.
+
+        Hybrid and colocated modes retain adapter base weights unless
+        ``lora.resync_base`` is enabled. Standalone mode releases only the KV cache.
+        """
         if self.node_rank != 0 or not self.config.free_cache_engine:
             return
 
