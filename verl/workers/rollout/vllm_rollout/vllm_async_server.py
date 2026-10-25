@@ -1527,6 +1527,10 @@ class vLLMHttpServer:
         )
         if mtp_rollout_enabled or is_torch_npu_available(check_device=False):
             return 1
+        checkpoint_config = getattr(self.config, "checkpoint_engine", None)
+        # Colocated non-naive sync loads weights before wake_up, so keep the offloaded weights.
+        if self.rollout_mode == RolloutMode.COLOCATED and getattr(checkpoint_config, "backend", "naive") != "naive":
+            return 1
         if self.lora_as_adapter:
             return 2 if self.model_config.lora.get("resync_base", False) else 1
         return 2
