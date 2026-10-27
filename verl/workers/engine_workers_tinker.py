@@ -145,8 +145,9 @@ class TinkerTrainingWorker(TrainingWorker):
 
         # Tinker returns per-token log-probs to the client after backward.
         # FSDP normally discards model_output to reduce peak memory, so
-        # explicitly opt this split-training path into retaining it.
-        tu.assign_non_tensor(data, return_model_output=True)
+        # retain it by default, while allowing metrics-only callers to opt out.
+        if "return_model_output" not in data.keys():
+            tu.assign_non_tensor(data, return_model_output=True)
 
         maybe_fix_3d_position_ids(data)
 
