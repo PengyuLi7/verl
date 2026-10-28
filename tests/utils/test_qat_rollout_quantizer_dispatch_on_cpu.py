@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from verl.utils.qat import compressed_tensors
 from verl.utils.qat.compressed_tensors import Fp8ConfigWeightQuantizer, dispatch_rollout_weight_quantizer
 
 
@@ -81,3 +82,69 @@ def test_null_quantization_override_rejects_qat():
             rollout_config=_rollout_config({"quantization_config": None}),
             qat_config=SimpleNamespace(enable=True, mode="fp8"),
         )
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("override", [None, {"quant_method": "fp8", "source": "override"}, {}])
+def test_hf_override_falls_back_to_text_config_only_for_null(monkeypatch, as_json, override):
+    """Non-null overrides win; null clears only the top-level quantization config."""
+    model_config = _model_config()
+    text_quantization = {"quant_method": "fp8", "source": "text"}
+    model_config.hf_config.text_config = SimpleNamespace(quantization_config=text_quantization)
+    overrides = {"quantization_config": override}
+    selected = []
+    monkeypatch.setattr(
+        compressed_tensors, "Fp8ConfigWeightQuantizer", lambda config, **kwargs: selected.append(config) or config
+    )
+    rollout_config = _rollout_config(json.dumps(overrides) if as_json else overrides)
+
+    if override == {}:
+        with pytest.raises(NotImplementedError, match="quant_method=''"):
+            dispatch_rollout_weight_quantizer(model_config=model_config, rollout_config=rollout_config)
+        assert selected == []
+    else:
+        expected = text_quantization if override is None else override
+        result = dispatch_rollout_weight_quantizer(
+            model_config=model_config,
+            rollout_config=rollout_config,
+            qat_config=SimpleNamespace(enable=True, mode="fp8"),
+        )
+        assert result == expected
+        assert selected == [expected]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("model_type", ["deepseek_v4", "deepseek_v41"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("quantization", [None, SimpleNamespace(linear=None, moe=None, config_file=None)])
+def test_deepseek_rejects_compressed_tensors_hf_override(as_json, model_type, nested, quantization):
+    """HF overrides must not bypass DeepSeek's native mixed-layout compatibility guard."""
+    model_config = _model_config()
+    if nested:
+        model_config.hf_config.model_type = "multimodal"
+        model_config.hf_config.text_config = SimpleNamespace(model_type=model_type)
+    else:
+        model_config.hf_config.model_type = model_type
+    overrides = {"quantization_config": {"quant_method": "compressed-tensors", "config_groups": {}}}
+    rollout_config = _rollout_config(json.dumps(overrides) if as_json else overrides)
+    rollout_config.quantization = quantization
+
+    with pytest.raises(NotImplementedError, match="not supported for DeepSeek-V4"):
+        dispatch_rollout_weight_quantizer(model_config=model_config, rollout_config=rollout_config)
+
+
+def test_other_models_keep_compressed_tensors_hf_override(monkeypatch):
+    model_config = _model_config()
+    model_config.hf_config.model_type = "llama"
+    config = {"quant_method": "compressed-tensors", "config_groups": {}}
+    selected = []
+    monkeypatch.setattr(
+        compressed_tensors, "CompressedTensorsWeightQuantizer", lambda config: selected.append(config) or config
+    )
+
+    result = dispatch_rollout_weight_quantizer(
+        model_config=model_config, rollout_config=_rollout_config({"quantization_config": config})
+    )
+
+    assert result == config
+    assert selected == [config]

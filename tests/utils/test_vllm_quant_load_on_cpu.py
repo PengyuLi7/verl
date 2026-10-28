@@ -87,6 +87,33 @@ def test_complete_fp8_pairs_are_dequantized(quant_loader, scale_name, scale_firs
 
 
 @pytest.mark.parametrize("scale_name", ["weight_scale", "weight_scale_inv"])
+@pytest.mark.parametrize("scale_first", [False, True])
+@pytest.mark.parametrize("weight_suffix, scale_suffix", [(".base_layer", ""), ("", ".base_layer")])
+def test_fused_fp8_pairs_ignore_base_layer_for_pairing(
+    quant_loader, scale_name, scale_first, weight_suffix, scale_suffix
+):
+    """Pair checkpoint shards of a fused BF16 owner while keeping the loader's weight name."""
+    runner = _runner()
+    runner.model.attn = torch.nn.Module()
+    runner.model.attn.qkv_proj = torch.nn.Linear(2, 6, bias=False, dtype=torch.bfloat16)
+    runner.model.packed_modules_mapping = {"qkv_proj": ["q_proj", "k_proj", "v_proj"]}
+    weight_name = f"attn.q_proj{weight_suffix}.weight"
+    weights = [
+        (weight_name, torch.ones(2, 2).to(torch.float8_e4m3fn)),
+        (f"attn.q_proj{scale_suffix}.{scale_name}", torch.full((1, 1), 3.0)),
+    ]
+    if scale_first:
+        weights.reverse()
+
+    loaded = quant_loader(iter(weights), runner, peft_config={"r": 1})
+
+    assert loaded == {weight_name}
+    [(name, weight)] = runner.model.load_weights.call_args.args[0]
+    assert name == weight_name
+    torch.testing.assert_close(weight, torch.full((2, 2), 3.0, dtype=torch.bfloat16))
+
+
+@pytest.mark.parametrize("scale_name", ["weight_scale", "weight_scale_inv"])
 def test_scale_only_entries_are_ignored(quant_loader, scale_name):
     """Trainer-only scales for BF16 parameters must remain harmless."""
     runner = _runner()

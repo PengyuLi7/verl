@@ -539,7 +539,8 @@ def _vllm_hf_overrides_quantization_config(rollout_config: Any) -> tuple[bool, A
     """``(present, value)`` of a ``quantization_config`` set in ``rollout.engine_kwargs.vllm.hf_overrides``.
 
     vLLM applies these overrides on top of the checkpoint config, so the rollout
-    runs whatever they set, including ``null`` for a BF16 rollout of an FP8 checkpoint.
+    runs whatever they set. A top-level ``null`` still allows a text-level
+    quantization config; without one it selects a BF16 rollout.
     """
     if getattr(rollout_config, "name", None) != "vllm":
         return False, None
@@ -576,9 +577,6 @@ def dispatch_rollout_weight_quantizer(
     has_override = bool(linear or moe or config_file)
 
     hf_config = model_config.hf_config
-    native = getattr(hf_config, "quantization_config", None)
-    if native is None:
-        native = getattr(getattr(hf_config, "text_config", None), "quantization_config", None)
     model_types = {
         getattr(hf_config, "model_type", None),
         getattr(getattr(hf_config, "text_config", None), "model_type", None),
@@ -601,9 +599,19 @@ def dispatch_rollout_weight_quantizer(
         has_hf_override, native = _vllm_hf_overrides_quantization_config(rollout_config)
         if not has_hf_override:
             native = getattr(hf_config, "quantization_config", None)
-            if native is None:
-                native = getattr(getattr(hf_config, "text_config", None), "quantization_config", None)
+        if native is None:
+            native = getattr(getattr(hf_config, "text_config", None), "quantization_config", None)
         quantization_config = _as_quantization_config(native)
+        if (
+            has_hf_override
+            and model_types & _DEEPSEEK_V4_MODEL_TYPES
+            and quantization_config is not None
+            and str(quantization_config.get("quant_method", "")).lower() == "compressed-tensors"
+        ):
+            raise NotImplementedError(
+                "hf_overrides compressed-tensors quantization overrides are not supported for DeepSeek-V4: "
+                "the trainer exports its native FP8/FP4 layout. Drop the override to sync the native quantization."
+            )
 
     qat_mode = qat_config.mode if qat_config is not None and qat_config.enable else None
     if quantization_config is None:

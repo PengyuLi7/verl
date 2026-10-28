@@ -338,7 +338,8 @@ def load_quanted_weights(weights, model_runner, is_drafter=False, peft_config=No
                 if live_dtype == torch.bfloat16 and (
                     leaf == "weight" and tensor.dtype in fp8_dtypes or leaf in {"weight_scale", "weight_scale_inv"}
                 ):
-                    entry = pending_fp8.setdefault(weight_name, {})
+                    pairing_key = weight_name.replace(".base_layer.", ".")
+                    entry = pending_fp8.setdefault(pairing_key, {})
                     entry[leaf] = tensor
                     if leaf == "weight":
                         entry["weight_name"] = resolved
@@ -352,7 +353,7 @@ def load_quanted_weights(weights, model_runner, is_drafter=False, peft_config=No
                                 ),
                             )
                         )
-                        del pending_fp8[weight_name]
+                        del pending_fp8[pairing_key]
                     continue
                 if (
                     leaf in {"weight_scale", "weight_scale_inv"}

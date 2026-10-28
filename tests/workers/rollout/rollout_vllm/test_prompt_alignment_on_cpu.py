@@ -31,7 +31,9 @@ from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer
         ([1, 10, 10, 2], [1, 10, 10, 10, 2], True, True),
         ([1, 10, 10, 2], [1, 10, 2], True, True),
         ([1, 10, 10, 2], [1, 10, 11, 2], True, True),
+        ([1, 10, 10, 2, 10, 3], [1, 10, 10, 2, 10, 3], True, False),
         ([1, 10, 10, 2, 10, 3], [1, 10, 2, 10, 10, 3], True, True),
+        ([10, 10, 1, 10], [10, 1, 10, 10], True, True),
         ([1, 10, 10, 2], [1, 10, 10, 10, 2], False, False),
     ],
 )
