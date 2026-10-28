@@ -268,6 +268,23 @@ def load_quanted_weights(weights, model_runner, is_drafter=False, peft_config=No
         packed_modules_mapping = getattr(model, "packed_modules_mapping", None) or {}
         weight_mapper = getattr(model, "hf_to_vllm_mapper", None)
 
+        suffix_dtypes: dict[str, set] = {}
+        for live_name, parameter in live_parameters.items():
+            segments = live_name.split(".")
+            for i in range(len(segments)):
+                suffix_dtypes.setdefault(".".join(segments[i:]), set()).add(parameter.dtype)
+
+        def match_dtype(candidate):
+            dtypes = suffix_dtypes.get(candidate, ())
+            return next(iter(dtypes)) if len(dtypes) == 1 else None
+
+        def mapped_candidates(candidate):
+            yield candidate
+            if weight_mapper is not None:
+                mapped = weight_mapper.apply_list([candidate])
+                if mapped and mapped[0] != candidate:
+                    yield mapped[0]
+
         def live_weight_dtype(name):
             candidates = [name]
             if ".base_layer." in name:
@@ -275,22 +292,6 @@ def load_quanted_weights(weights, model_runner, is_drafter=False, peft_config=No
             else:
                 prefix, leaf = name.rsplit(".", 1)
                 candidates.append(f"{prefix}.base_layer.{leaf}")
-
-            def match_dtype(candidate):
-                matches = [
-                    parameter
-                    for live_name, parameter in live_parameters.items()
-                    if live_name == candidate or live_name.endswith(f".{candidate}")
-                ]
-                dtypes = {parameter.dtype for parameter in matches}
-                return next(iter(dtypes)) if len(dtypes) == 1 else None
-
-            def mapped_candidates(candidate):
-                yield candidate
-                if weight_mapper is not None:
-                    mapped = weight_mapper.apply_list([candidate])
-                    if mapped and mapped[0] != candidate:
-                        yield mapped[0]
 
             for candidate in candidates:
                 for mapped in mapped_candidates(candidate):
