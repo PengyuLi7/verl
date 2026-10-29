@@ -1027,10 +1027,10 @@ class MegatronEngine(BaseEngine):
                         pass
 
                 vllm_shared = getattr(self, "vllm_enable_moe_shared_loras", False)
-                if is_3d_moe:
-                    export_kwargs["stack_3d_moe"] = True
-                elif vllm_shared:
+                if vllm_shared:
                     export_kwargs["moe_shared_loras"] = True
+                elif is_3d_moe:
+                    export_kwargs["stack_3d_moe"] = True
                 else:
                     export_kwargs["expand_shared_outer"] = True
             per_tensor_param = self.bridge.export_adapter_weights(self.module, **export_kwargs)

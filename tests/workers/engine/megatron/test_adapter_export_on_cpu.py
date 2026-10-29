@@ -83,7 +83,7 @@ def test_adapter_layout_matches_vllm_wrapper(adapter_export, monkeypatch, is_3d,
 
     adapter_export(engine, base_sync_done=True)
 
-    expected = "stack_3d_moe" if is_3d and not mixed else "moe_shared_loras" if shared else "expand_shared_outer"
+    expected = "moe_shared_loras" if shared else "stack_3d_moe" if is_3d and not mixed else "expand_shared_outer"
     engine.bridge.export_adapter_weights.assert_called_once_with(engine.module, **{expected: True})
 
 
