@@ -855,6 +855,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 3. sync weights: For SGLang, we need base first (when needed), then adapter/merged
         if do_lora_base_sync:
+            if self.layered_summon:
+                raise ValueError(
+                    "rollout.layered_summon=True does not support LoRA base weight synchronization. "
+                    "Use a preloaded base model with model.lora.resync_base=False, "
+                    "or set rollout.layered_summon=False."
+                )
             per_tensor_param_base, _base_peft_config = self.actor.engine.get_per_tensor_param(
                 layered_summon=self.layered_summon, base_sync_done=False
             )
