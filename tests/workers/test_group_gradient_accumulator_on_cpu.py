@@ -148,3 +148,25 @@ def test_cp_finalization_normalizer_is_invariant_to_group_and_microbatch_boundar
     # The same unnormalized gradient must be divided by the same number.
     gradient_sum = torch.tensor([2.5, -1.25])
     torch.testing.assert_close(gradient_sum / group_denominator, gradient_sum / full_denominator)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_host_resident_sums_match_device_resident_sums():
+    """The accumulator may keep its FP32 sum in host memory to free GPU memory."""
+    torch.manual_seed(23)
+    gradients = [torch.randn(4, 5, device="cuda") for _ in range(2)]
+    weights = [3.0, 7.0]
+    names = ("a", "b")
+
+    restored = {}
+    for where in ("cuda", "cpu"):
+        sums = {name: torch.zeros_like(grad, device=where) for name, grad in zip(names, gradients, strict=False)}
+        accumulator = GroupGradientAccumulator(["g0", "g1"], sums=sums)
+        for group_id, grad, weight in zip(("g0", "g1"), gradients, weights, strict=False):
+            accumulator.add(group_id, dict(zip(names, (grad, grad), strict=False)), weight)
+        buffers = {name: torch.zeros_like(grad) for name, grad in zip(names, gradients, strict=False)}
+        accumulator.restore(buffers)
+        restored[where] = {name: buffer.cpu() for name, buffer in buffers.items()}
+
+    for name in names:
+        assert torch.equal(restored["cpu"][name], restored["cuda"][name])

@@ -36,7 +36,10 @@ def server_url():
 
 async def request(method, path, **kwargs):
     """Fail transport errors instead of converting environment failures into rewards."""
-    async with httpx.AsyncClient(base_url=server_url(), timeout=120, trust_env=False) as client:
+    # The synthetic slow-task tail can hold a session-open request for minutes;
+    # keep a generous timeout so it is not mistaken for an environment failure.
+    timeout = float(os.environ.get("ALFWORLD_HTTP_TIMEOUT", "600"))
+    async with httpx.AsyncClient(base_url=server_url(), timeout=timeout, trust_env=False) as client:
         response = await client.request(method, path, **kwargs)
         response.raise_for_status()
         return response.json()
@@ -134,7 +137,12 @@ class AlfworldAgentLoop(ToolAgentLoop):
                 generated_tokens=sum(output.response_mask),
             )
             output.extra_fields["reward_extra_info"] = {"acc": output.reward_score, **record}
-            logger.info("alfworld_episode %s", json.dumps(record))
+            # Ray forwards worker stdout to the driver log; a bare logger.info can be
+            # dropped when the worker root handler level is WARNING. The pilot tooling
+            # parses these lines, so emit them on stdout as well.
+            record_line = "alfworld_episode " + json.dumps(record)
+            logger.info("%s", record_line)
+            print(record_line, flush=True)
             return output
         finally:
             await request("DELETE", f"/sessions/{session_id}")

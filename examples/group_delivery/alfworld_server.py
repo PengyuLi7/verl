@@ -17,14 +17,36 @@ Run: ALFWORLD_DATA=/data/alfworld python examples/group_delivery/alfworld_server
 The default bind address is loopback. Use a single server worker because sessions are local.
 """
 
+import hashlib
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+# Synthetic tail: real agentic workloads mix fast tasks with a small fraction
+# of very slow ones; ALFWorld's own spread is only ~1.3x (P95/P50), which never
+# exercises group_delivery's overlap. These knobs inject a deterministic
+# per-task tool latency (same task -> same delay in every run and every mode),
+# changing wall-clock time only, never the environment dynamics or rewards.
+TAIL_FRACTION = float(os.environ.get("ALFWORLD_TAIL_FRACTION", "0") or 0)
+TAIL_DELAY_MS = int(os.environ.get("ALFWORLD_TAIL_DELAY_MS", "0") or 0)
+
+
+def tail_delay_s(game_file: str) -> float:
+    """Deterministic slow-task delay from the game file hash (0 for fast tasks)."""
+    if TAIL_FRACTION <= 0 or TAIL_DELAY_MS <= 0:
+        return 0.0
+    digest = int(hashlib.sha1(game_file.encode()).hexdigest(), 16)
+    if (digest % 1000) >= TAIL_FRACTION * 1000:
+        return 0.0
+    # +-20% jitter so the tail is a distribution, not a single spike.
+    jitter = 0.8 + 0.4 * ((digest >> 20) % 1000) / 1000.0
+    return TAIL_DELAY_MS * jitter / 1000.0
 
 
 def make_environment(game_file, max_steps):
@@ -61,12 +83,17 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
     """Create isolated sessions; an injectable factory allows CPU lifecycle tests."""
     root = Path(data_root).resolve()
     sessions, registry_lock = {}, threading.RLock()
+    # TextWorld's shared TatSu parser is not thread-safe; concurrent env.step()
+    # calls corrupt its grammar stack. FastAPI runs sync endpoints in a thread
+    # pool, so all environment access must be serialized process-wide.
+    env_lock = threading.RLock()
 
     @asynccontextmanager
     async def lifespan(app):
         yield
-        for session in sessions.values():
-            session["env"].close()
+        with env_lock:
+            for session in sessions.values():
+                session["env"].close()
 
     app = FastAPI(lifespan=lifespan)
 
@@ -84,12 +111,18 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
         path = (root / body.game_file).resolve()
         if not path.is_relative_to(root) or path.name != "game.tw-pddl" or not path.is_file():
             raise HTTPException(400, "Expected a game.tw-pddl file inside ALFWORLD_DATA")
+        # Sleep before taking registry_lock/env_lock: a slow task must not
+        # serialize session creation for every other concurrent episode.
+        delay_s = tail_delay_s(body.game_file)
+        if delay_s:
+            time.sleep(delay_s)
         with registry_lock:
             if len(sessions) >= 128:
                 raise HTTPException(503, "Too many active environment sessions")
             env = environment_factory(path, max_steps)
             try:
-                observations, infos = env.reset()
+                with env_lock:
+                    observations, infos = env.reset()
             except Exception:
                 env.close()
                 raise
@@ -120,7 +153,8 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
         with session["lock"]:
             if not session["done"]:
                 try:
-                    observations, _, dones, infos = session["env"].step([body.action])
+                    with env_lock:
+                        observations, _, dones, infos = session["env"].step([body.action])
                     session.update(
                         observation=observations[0],
                         commands=list(infos["admissible_commands"][0]),
@@ -139,7 +173,8 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
             session = sessions.pop(session_id, None)
         if session is not None:
             with session["lock"]:
-                session["env"].close()
+                with env_lock:
+                    session["env"].close()
         return {"closed": True}
 
     return app

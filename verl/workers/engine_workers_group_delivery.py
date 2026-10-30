@@ -13,10 +13,12 @@
 # limitations under the License.
 """Megatron workers for synchronous RL with group-level delivery."""
 
+import torch
 from tensordict import TensorDict
 
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
 from verl.utils import tensordict_utils as tu
+from verl.utils.device import get_torch_device, is_device_available
 from verl.utils.profiler import DistProfiler
 from verl.workers.engine_workers import _with_routing_replay_flag
 from verl.workers.engine_workers_tinker import TinkerActorRolloutRefWorker, TinkerTrainingWorker
@@ -73,7 +75,21 @@ class GroupDeliveryTrainingWorker(TinkerTrainingWorker):
         buffers = megatron_gradient_buffers(engine.module)
         if any(str(grad.dtype) != "torch.float32" for grad in buffers.values()):
             raise ValueError("group_delivery requires FP32 gradient reduction")
-        self.group_accumulator = GroupGradientAccumulator(group_ids)
+        # Allocate the FP32 accumulator once and reuse it for every batch. A
+        # per-batch allocation of the full owned gradient shard can fail on the
+        # second step, after the allocator is fragmented by the first update.
+        # It lives in host memory: at 4B/TP2 the 8 GiB it would occupy on the
+        # GPU is exactly what the backward needs for activations, and the sum is
+        # only touched between backward calls (one D2H per group, one H2D per
+        # step). FP32 precision is unchanged.
+        if getattr(self, "_accumulator_sums", None) is None:
+            self._accumulator_sums = {name: torch.zeros_like(grad, device="cpu") for name, grad in buffers.items()}
+        if getattr(self, "_accumulator_staging", None) is None:
+            elements = GroupGradientAccumulator.STAGING_BYTES // buffers[next(iter(buffers))].element_size()
+            self._accumulator_staging = torch.empty(elements, dtype=torch.float32, pin_memory=True)
+        self.group_accumulator = GroupGradientAccumulator(
+            group_ids, sums=self._accumulator_sums, staging=self._accumulator_staging
+        )
         self.optimizer_zero_grad()
 
     def backward_group(self, data: TensorDict) -> TensorDict | None:
@@ -86,8 +102,19 @@ class GroupDeliveryTrainingWorker(TinkerTrainingWorker):
         # Reuse the upstream split primitives, but isolate each finalized group
         # from the next Megatron schedule's reduction/scaling and bucket state.
         self.optimizer_zero_grad()
+        # A long packed sequence can require a contiguous attention buffer larger
+        # than the allocator's free block while cached-but-unused segments still
+        # sit in the pool. Release them before the schedule needs the big buffer.
+        if is_device_available() and get_torch_device().mem_get_info()[0] < 9 * 1024**3:
+            get_torch_device().empty_cache()
         try:
             output = self.forward_backward(data)
+            # The accumulator allocates a full FP32 copy of this rank's gradient
+            # shard on the first group of each batch (~7.5 GiB for 4B/TP2). The
+            # schedule's freed activation blocks sit in the allocator cache, so
+            # release them immediately before that single large allocation.
+            if is_device_available() and get_torch_device().mem_get_info()[0] < 9 * 1024**3:
+                get_torch_device().empty_cache()
             accumulator.add(group_id, megatron_gradient_buffers(self.engine.module), weight)
         finally:
             self.optimizer_zero_grad()
@@ -107,6 +134,12 @@ class GroupDeliveryTrainingWorker(TinkerTrainingWorker):
             metrics = self.optimizer_step()
             metrics["lr"] = self.engine.lr_scheduler_step()
         self.group_accumulator = None
+        # The weight sync that follows this update converts TP shards to HF
+        # tensors and needs a few hundred MB of scratch space on the training
+        # GPUs, which at 4B are otherwise fully committed. The step's activation
+        # blocks are dead now; release them before the sync asks for room.
+        if is_device_available():
+            get_torch_device().empty_cache()
         return metrics
 
     def abort_group_batch(self) -> None:

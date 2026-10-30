@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import ray
 import transfer_queue as tq
@@ -122,10 +123,17 @@ class PPOTrainerGroupDelivery(PPOTrainerSeparateAsync):
         # Checkpoints are only taken after the accumulation window was committed.
         # A restored async checkpoint with pending prompts has different semantics.
         partitions = tq.kv_list(partition_id) or {}
-        if any(tag.get("is_prompt", False) for tag in partitions.get(partition_id, {}).values()):
+        tags = partitions.get(partition_id, {})
+        if any(tag.get("is_prompt", False) for tag in tags.values()):
             raise RuntimeError("group_delivery cannot resume a checkpoint containing unconsumed prompt groups")
-        tq.kv_clear(partition_id=partition_id)
+        if tags:
+            tq.kv_clear(keys=list(tags), partition_id=partition_id)
         return 0
+
+    def on_init_end(self):
+        # The dedicated rollout replicas are created with load_format=dummy and
+        # hold no checkpoint weights; publish them before the first rollout.
+        self.standalone_checkpoint_manager.update_weights(self.global_steps)
 
     def on_train_begin(self):
         """No warmup or next-step prompts may run under the current policy."""
@@ -207,12 +215,26 @@ class PPOTrainerGroupDelivery(PPOTrainerSeparateAsync):
                 results = self.actor_rollout_wg.finish_group_batch()
                 self._record_event("optimizer_end")
         except Exception:
+            # Log the original failure before touching the workers: if one rank
+            # died inside a collective (e.g. a CUDA OOM), its peer spins there
+            # and any cleanup RPC to that peer never returns. Without this line
+            # the traceback is lost behind the blocked cleanup.
+            logger.exception("group_delivery step failed; aborting the batch")
             # Both cleanups must be attempted; preserve the original failure.
-            for cleanup in (self.actor_rollout_wg.abort_group_batch, self.standalone_checkpoint_manager.abort_replicas):
+            cleanups = (
+                ("abort_group_batch", self.actor_rollout_wg.abort_group_batch),
+                ("abort_replicas", self.standalone_checkpoint_manager.abort_replicas),
+            )
+            for name, cleanup in cleanups:
+                executor = ThreadPoolExecutor(max_workers=1)
                 try:
-                    cleanup()
+                    executor.submit(cleanup).result(timeout=60)
+                except TimeoutError:
+                    logger.exception("group_delivery cleanup %s timed out; worker is stuck", name)
                 except Exception:
-                    logger.exception("group_delivery cleanup failed")
+                    logger.exception("group_delivery cleanup %s failed", name)
+                finally:
+                    executor.shutdown(wait=False)
             raise
         metrics.update(aggregator.get_aggregated_metrics())
         # ONE_TO_ALL returns one result per rank; the optimizer computes a global norm.
