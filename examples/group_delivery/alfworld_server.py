@@ -105,21 +105,39 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
         return {key: value for key, value in session.items() if key not in ("env", "lock", "last_used")}
 
     def purge_expired_sessions():
-        """Evict sessions whose client disappeared without sending DELETE."""
+        """Evict sessions whose client disappeared without sending DELETE.
+
+        Each candidate is re-checked under its session lock, which a step or a
+        GET holds for the whole call, so an in-flight session is never evicted
+        even when one call outlives the TTL. Eviction closes the environment
+        under the process-wide env lock.
+        """
         if SESSION_TTL_S <= 0:
             return
         now = time.time()
         with registry_lock:
-            expired_ids = [
-                session_id for session_id, session in sessions.items() if now - session["last_used"] > SESSION_TTL_S
+            candidates = [
+                (session_id, session)
+                for session_id, session in sessions.items()
+                if now - session["last_used"] > SESSION_TTL_S
             ]
-            expired = [sessions.pop(session_id) for session_id in expired_ids]
-        for session in expired:
-            with env_lock:
-                try:
-                    session["env"].close()
-                except Exception:
-                    pass
+        for session_id, session in candidates:
+            if not session["lock"].acquire(blocking=False):
+                continue
+            try:
+                if time.time() - session["last_used"] <= SESSION_TTL_S:
+                    continue
+                with registry_lock:
+                    if sessions.get(session_id) is not session:
+                        continue
+                    sessions.pop(session_id, None)
+                with env_lock:
+                    try:
+                        session["env"].close()
+                    except Exception:
+                        pass
+            finally:
+                session["lock"].release()
 
     def lookup(session_id):
         with registry_lock:
@@ -176,21 +194,26 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
         session = lookup(session_id)
         with session["lock"]:
             session["last_used"] = time.time()
-            if not session["done"]:
-                try:
-                    with env_lock:
-                        observations, _, dones, infos = session["env"].step([body.action])
-                    session.update(
-                        observation=observations[0],
-                        commands=list(infos["admissible_commands"][0]),
-                        won=bool(infos["won"][0]),
-                        steps=session["steps"] + 1,
-                    )
-                    session["done"] = bool(dones[0]) or session["won"] or session["steps"] >= max_steps
-                except Exception:
-                    session.update(error=True, done=True)
-                    raise
-            return view(session)
+            try:
+                if not session["done"]:
+                    try:
+                        with env_lock:
+                            observations, _, dones, infos = session["env"].step([body.action])
+                        session.update(
+                            observation=observations[0],
+                            commands=list(infos["admissible_commands"][0]),
+                            won=bool(infos["won"][0]),
+                            steps=session["steps"] + 1,
+                        )
+                        session["done"] = bool(dones[0]) or session["won"] or session["steps"] >= max_steps
+                    except Exception:
+                        session.update(error=True, done=True)
+                        raise
+                return view(session)
+            finally:
+                # Refresh after the step so a long call cannot age the session
+                # out while its lock is held (see purge_expired_sessions).
+                session["last_used"] = time.time()
 
     @app.delete("/sessions/{session_id}")
     def close_session(session_id: str):
