@@ -35,6 +35,10 @@ from pydantic import BaseModel
 # changing wall-clock time only, never the environment dynamics or rewards.
 TAIL_FRACTION = float(os.environ.get("ALFWORLD_TAIL_FRACTION", "0") or 0)
 TAIL_DELAY_MS = int(os.environ.get("ALFWORLD_TAIL_DELAY_MS", "0") or 0)
+# A client that cancels right after POST /sessions never reaches the DELETE in
+# its finally block, so the session would occupy the 128-session cap forever.
+# Sessions idle longer than this are closed and evicted on the next creation.
+SESSION_TTL_S = float(os.environ.get("ALFWORLD_SESSION_TTL_S", "1800") or 0)
 
 
 def tail_delay_s(game_file: str) -> float:
@@ -98,7 +102,24 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
     app = FastAPI(lifespan=lifespan)
 
     def view(session):
-        return {key: value for key, value in session.items() if key not in ("env", "lock")}
+        return {key: value for key, value in session.items() if key not in ("env", "lock", "last_used")}
+
+    def purge_expired_sessions():
+        """Evict sessions whose client disappeared without sending DELETE."""
+        if SESSION_TTL_S <= 0:
+            return
+        now = time.time()
+        with registry_lock:
+            expired_ids = [
+                session_id for session_id, session in sessions.items() if now - session["last_used"] > SESSION_TTL_S
+            ]
+            expired = [sessions.pop(session_id) for session_id in expired_ids]
+        for session in expired:
+            with env_lock:
+                try:
+                    session["env"].close()
+                except Exception:
+                    pass
 
     def lookup(session_id):
         with registry_lock:
@@ -116,6 +137,7 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
         delay_s = tail_delay_s(body.game_file)
         if delay_s:
             time.sleep(delay_s)
+        purge_expired_sessions()
         with registry_lock:
             if len(sessions) >= 128:
                 raise HTTPException(503, "Too many active environment sessions")
@@ -138,6 +160,7 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
                 won=False,
                 done=False,
                 error=False,
+                last_used=time.time(),
             )
             return view(sessions[session_id])
 
@@ -145,12 +168,14 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
     def get_session(session_id: str):
         session = lookup(session_id)
         with session["lock"]:
+            session["last_used"] = time.time()
             return view(session)
 
     @app.post("/sessions/{session_id}/step")
     def step_session(session_id: str, body: Action):
         session = lookup(session_id)
         with session["lock"]:
+            session["last_used"] = time.time()
             if not session["done"]:
                 try:
                     with env_lock:

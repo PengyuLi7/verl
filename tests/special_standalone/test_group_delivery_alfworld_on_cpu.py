@@ -14,12 +14,14 @@
 """ALFWorld integration lifecycle and measured tail selection without downloading environments."""
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from examples.group_delivery import alfworld_agent as agent
+from examples.group_delivery import alfworld_server
 from examples.group_delivery.alfworld_server import create_app
 from examples.group_delivery.prepare_alfworld import group_durations, select_long_tail, tail_report
 from verl.experimental.agent_loop.agent_loop import AgentLoopOutput
@@ -109,6 +111,25 @@ def test_sessions_are_isolated_and_cannot_open_paths_outside_data_root(tmp_path)
         for session_id in ids:
             client.delete(f"/sessions/{session_id}")
             assert client.get(f"/sessions/{session_id}").status_code == 404
+
+
+def test_expired_sessions_are_evicted_on_the_next_open(tmp_path, monkeypatch):
+    (tmp_path / "game.tw-pddl").write_text("{}")
+    environments = []
+
+    def factory(*args):
+        env = Environment()
+        environments.append(env)
+        return env
+
+    monkeypatch.setattr(alfworld_server, "SESSION_TTL_S", 0.2)
+    with TestClient(alfworld_server.create_app(tmp_path, environment_factory=factory)) as client:
+        first = client.post("/sessions", json={"game_file": "game.tw-pddl"}).json()["session_id"]
+        time.sleep(0.3)
+        second = client.post("/sessions", json={"game_file": "game.tw-pddl"}).json()["session_id"]
+        assert client.get(f"/sessions/{first}").status_code == 404
+        assert client.get(f"/sessions/{second}").status_code == 200
+    assert environments[0].closed
 
 
 def test_tail_selection_requires_measured_latency_and_freezes_real_games():
