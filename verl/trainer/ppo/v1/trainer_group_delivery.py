@@ -18,6 +18,7 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import ray
 import transfer_queue as tq
@@ -30,6 +31,7 @@ from verl.trainer.ppo.v1.group_delivery import GroupDeliveryReplayBuffer
 from verl.trainer.ppo.v1.trainer_base import PPOTrainer, register_trainer
 from verl.trainer.ppo.v1.trainer_separate_async import PPOTrainerSeparateAsync
 from verl.trainer.ppo.v1.utils import MetricsAggregator
+from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
 from verl.utils.py_functional import rename_dict
@@ -100,6 +102,12 @@ class PPOTrainerGroupDelivery(PPOTrainerSeparateAsync):
         validate_group_delivery_config(config)
         self._enable_hybrid_replicas = False
         # Deliberately bypass the async initializer and all switching/prefetch state.
+        # Define the switch config it would have set, with switching forced off, so
+        # inherited hooks that read it fail safe instead of raising AttributeError.
+        self.hybrid_rollout_config = replace(
+            omega_conf_to_dataclass(config.trainer.v1.separate_async.hybrid_rollout),
+            enable_switch=False,
+        )
         PPOTrainer.__init__(self, config)
 
     def _build_replay_buffer(self):

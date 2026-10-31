@@ -13,23 +13,16 @@ optimizer step、scheduler step 和权重同步。失败时不丢弃慢组、不
 ## 代码与重复工作核查
 
 基线：`verl-project/verl` 的 `4d3ed12a7617c6b78ee0ac8f27dd7848bb0d11ee`。
-分支：`codex/sync-group-streaming`；功能和配置名称统一为 `group_delivery`。
-交付仓库：[PengyuLi7/verl](https://github.com/PengyuLi7/verl/tree/codex/sync-group-streaming)。
-这个分支包含实现、测试、ALFWorld 配方及两份 group_delivery 文档；尚未创建上游 PR。
+分支：`group-delivery`；功能和配置名称统一为 `group_delivery`。
+上游评审：[verl-project/verl#8466](https://github.com/verl-project/verl/pull/8466)。
+这个分支包含实现、测试、ALFWorld 配方及两份 group_delivery 文档。
 
-另一台电脑首次获取：
+另一个 checkout 获取本分支：
 
 ```bash
-git clone --branch codex/sync-group-streaming --single-branch https://github.com/PengyuLi7/verl.git
-cd verl
+git fetch origin pull/8466/head:group-delivery-validation
+git switch group-delivery-validation
 git rev-parse HEAD
-```
-
-如果已有 verl checkout，先保存自己的改动，再执行：
-
-```bash
-git fetch https://github.com/PengyuLi7/verl.git codex/sync-group-streaming
-git switch -c group-delivery-validation FETCH_HEAD
 ```
 
 记录实际检出的 commit，按下文准备 Linux/GPU 环境；不要复制开发机的 macOS `.venv`。
