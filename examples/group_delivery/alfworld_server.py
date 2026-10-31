@@ -186,6 +186,9 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
     def get_session(session_id: str):
         session = lookup(session_id)
         with session["lock"]:
+            with registry_lock:
+                if sessions.get(session_id) is not session:
+                    raise HTTPException(404, "Unknown environment session")
             session["last_used"] = time.time()
             return view(session)
 
@@ -193,6 +196,11 @@ def create_app(data_root, max_steps=50, environment_factory=make_environment):
     def step_session(session_id: str, body: Action):
         session = lookup(session_id)
         with session["lock"]:
+            # lookup() released registry_lock before this lock was taken, so a
+            # concurrent open_session could have evicted the session already.
+            with registry_lock:
+                if sessions.get(session_id) is not session:
+                    raise HTTPException(404, "Unknown environment session")
             session["last_used"] = time.time()
             try:
                 if not session["done"]:
